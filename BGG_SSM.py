@@ -188,3 +188,133 @@ plt.savefig("rolling_R2.png", dpi=150)
 plt.close()
 
 print("Results saved to BGG_state_results.npz and regression_results.csv")
+
+# ── 7  analytical output (scatter, hist, lag search) ─────────────────
+
+# ----- Results.py functionality -----
+df_res = pd.DataFrame({
+    "Date": dates,
+    "Realised": unsm_rough,
+    "Fitted": unsmoothed,
+})
+df_res["Residual"] = df_res["Realised"] - df_res["Fitted"]
+r2_full = 1 - df_res["Residual"].var() / df_res["Realised"].var()
+print(f"Whole-sample R^2 = {r2_full:.3f}")
+
+plt.figure(figsize=(4,3))
+plt.scatter(df_res["Fitted"], df_res["Realised"], s=10, alpha=0.7)
+lims = [df_res[["Fitted", "Realised"]].min().min(),
+        df_res[["Fitted", "Realised"]].max().max()]
+plt.plot(lims, lims, "--", lw=1)
+plt.title("Realised vs Fitted")
+plt.tight_layout()
+plt.savefig("scatter_realised_vs_fitted.png", dpi=150)
+plt.close()
+
+plt.figure(figsize=(4,3))
+resid = df_res["Residual"]
+plt.hist(resid, bins=30, density=True, alpha=0.65)
+mu, sd = resid.mean(), resid.std()
+x = np.linspace(resid.min(), resid.max(), 200)
+plt.plot(x, (1/(sd*np.sqrt(2*np.pi))) * np.exp(-0.5*((x-mu)/sd)**2), lw=1.5)
+plt.title("Residual distribution")
+plt.tight_layout()
+plt.savefig("residual_hist.png", dpi=150)
+plt.close()
+
+plt.figure(figsize=(8,3))
+plt.plot(dates, df_res["Realised"], label="Realised")
+plt.plot(dates, df_res["Fitted"], label="Fitted")
+plt.title("Realised vs Fitted")
+plt.legend(fontsize=8)
+plt.tight_layout()
+plt.savefig("series_fit.png", dpi=150)
+plt.close()
+
+ROLL_B = 8
+plt.figure(figsize=(8, 1.8*K_use))
+for i in range(K_use):
+    rb = pd.Series(beta_path[:, i]).rolling(ROLL_B).mean()
+    plt.plot(dates, rb, label=best_row["vars"].split(",")[i])
+plt.axhline(0, color="black", lw=0.5)
+plt.title(f"Rolling betas ({ROLL_B}-qtr MA)")
+plt.legend(fontsize=8)
+plt.tight_layout()
+plt.savefig("rolling_betas.png", dpi=150)
+plt.close()
+
+# ----- Plotting Script functionality -----
+MAX_LAG = 6
+factors = F0
+sse = np.zeros(MAX_LAG+1)
+adjR = np.zeros(MAX_LAG+1)
+aic = np.zeros(MAX_LAG+1)
+bic = np.zeros(MAX_LAG+1)
+beta_store = []
+
+for k in range(MAX_LAG+1):
+    X_list = [np.ones(T)]
+    for lag in range(k+1):
+        lagged = np.roll(factors, lag, axis=0)
+        lagged[:lag] = np.nan
+        X_list.append(lagged)
+    X = np.column_stack(X_list)
+    valid = ~np.isnan(X).any(axis=1)
+    y = unsm_rough[valid]
+    Xv = X[valid]
+    res = sm.OLS(y, Xv).fit()
+    sse[k] = np.sum(res.resid**2)
+    adjR[k] = res.rsquared_adj
+    aic[k] = res.aic
+    bic[k] = res.bic
+    beta_store.append(res.params)
+
+best_k = int(np.argmin(bic))
+X_best_list = [np.ones(T)]
+for lag in range(best_k+1):
+    lagged = np.roll(factors, lag, axis=0)
+    lagged[:lag] = np.nan
+    X_best_list.append(lagged)
+X_best = np.column_stack(X_best_list)
+fitted = np.dot(X_best, beta_store[best_k])
+fitted[np.isnan(fitted)] = np.nan
+
+from matplotlib.gridspec import GridSpec
+plt.figure(figsize=(13,8))
+gs = GridSpec(2,3, height_ratios=[1,1.1])
+
+ax1 = plt.subplot(gs[0,0])
+ax1.plot(range(MAX_LAG+1), sse, marker="o")
+ax1.set_xlabel("Num. Lags"); ax1.set_ylabel("Sum-sq Err")
+ax1.set_title("Prediction Error")
+ax1.axvline(best_k, color="g", ls="--")
+
+ax2 = plt.subplot(gs[0,1])
+for i, name in enumerate(["Mkt", "SMB", "HML", "LIQ"]):
+    weights = [beta_store[j][1 + i*(j+1)] for j in range(MAX_LAG+1)]
+    ax2.plot(range(MAX_LAG+1), weights, marker="o", label=name)
+ax2.set_xlabel("Num. Lags"); ax2.set_ylabel("Weight")
+ax2.set_title("Optimal Factor Weights")
+ax2.legend(fontsize=8)
+
+ax3 = plt.subplot(gs[0,2])
+ax3.plot(range(MAX_LAG+1), adjR, marker="o")
+ax3.set_xlabel("Num. Lags"); ax3.set_ylabel("Adj R^2")
+ax3.set_title("Model Fit")
+ax3.axvline(best_k, color="r", ls="--")
+
+ax4 = plt.subplot(gs[1,0])
+ax4.plot(range(MAX_LAG+1), aic, marker="o", label="AIC")
+ax4.plot(range(MAX_LAG+1), bic, marker="s", label="BIC")
+ax4.set_xlabel("Num. Lags"); ax4.set_ylabel("IC")
+ax4.set_title("Model Selection")
+ax4.legend()
+
+ax5 = plt.subplot(gs[1,1:])
+ax5.plot(dates, unsm_rough, label="Unsmooothed", lw=1)
+ax5.plot(dates, fitted, "--", label="Smoothed (FOLB)", lw=1)
+ax5.set_title("Factor-Mimicking Series")
+ax5.legend()
+plt.tight_layout()
+plt.savefig("lag_diagnostics.png", dpi=150)
+plt.close()
